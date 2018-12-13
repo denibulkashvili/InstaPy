@@ -1,21 +1,24 @@
 """Module only used for the login part of the script"""
+# import built-in & third-party modules
 import time
 import pickle
 from selenium.webdriver.common.action_chains import ActionChains
 
+# import InstaPy modules
 from .time_util import sleep
 from .util import update_activity
 from .util import web_address_navigator
+from .util import reload_webpage
 from .util import explicit_wait
 from .util import click_element
+from .util import check_authorization
 
+# import exceptions
 from selenium.common.exceptions import NoSuchElementException
 from selenium.common.exceptions import WebDriverException
 
 
-
-
-def bypass_suspicious_login(browser):
+def bypass_suspicious_login(browser, bypass_with_mobile):
     """Bypass suspicious loggin attempt verification. This should be only enabled
     when there isn't available cookie for the username, otherwise it will and
     shows "Unable to locate email or phone button" message, folollowed by
@@ -53,26 +56,40 @@ def bypass_suspicious_login(browser):
         pass
 
     try:
-        user_email = browser.find_element_by_xpath(
+        choice = browser.find_element_by_xpath(
             "//label[@for='choice_1']").text
 
     except NoSuchElementException:
         try:
-            user_email = browser.find_element_by_xpath(
+            choice = browser.find_element_by_xpath(
                 "//label[@class='_q0nt5']").text
 
-        except:
+        except Exception:
             try:
-                user_email = browser.find_element_by_xpath(
+                choice = browser.find_element_by_xpath(
                     "//label[@class='_q0nt5 _a7z3k']").text
 
-            except:
+            except Exception:
                 print("Unable to locate email or phone button, maybe "
-                        "bypass_suspicious_login=True isn't needed anymore.")
+                      "bypass_suspicious_login=True isn't needed anymore.")
                 return False
 
+    if bypass_with_mobile:
+        choice = browser.find_element_by_xpath(
+            "//label[@for='choice_0']").text
+
+        mobile_button = browser.find_element_by_xpath(
+            "//label[@for='choice_0']")
+
+        (ActionChains(browser)
+            .move_to_element(mobile_button)
+            .click()
+            .perform())
+
+        sleep(5)
+
     send_security_code_button = browser.find_element_by_xpath(
-        "//button[text()='Send Security Code']")
+            "//button[text()='Send Security Code']")
 
     (ActionChains(browser)
         .move_to_element(send_security_code_button)
@@ -83,7 +100,7 @@ def bypass_suspicious_login(browser):
     update_activity()
 
     print('Instagram detected an unusual login attempt')
-    print('A security code was sent to your {}'.format(user_email))
+    print('A security code was sent to your {}'.format(choice))
     security_code = input('Type the security code here: ')
 
     security_code_field = browser.find_element_by_xpath((
@@ -126,14 +143,15 @@ def bypass_suspicious_login(browser):
         pass
 
 
-
 def login_user(browser,
                username,
                password,
                logger,
                logfolder,
                switch_language=True,
-               bypass_suspicious_attempt=False):
+               bypass_suspicious_attempt=False,
+               bypass_with_mobile=False
+               ):
     """Logins the user with the given username and password"""
     assert username, 'Username not provided'
     assert password, 'Password not provided'
@@ -144,10 +162,8 @@ def login_user(browser,
 
     # try to load cookie from username
     try:
-        googledotcom = "https://www.google.com"
-        web_address_navigator(browser, googledotcom)
         for cookie in pickle.load(open('{0}{1}_cookie.pkl'
-                                       .format(logfolder,username), 'rb')):
+                                       .format(logfolder, username), 'rb')):
             browser.add_cookie(cookie)
             cookie_loaded = True
     except (WebDriverException, OSError, IOError):
@@ -155,33 +171,37 @@ def login_user(browser,
 
     # include time.sleep(1) to prevent getting stuck on google.com
     time.sleep(1)
-    
-    web_address_navigator(browser, ig_homepage)
 
-    # Cookie has been loaded, user should be logged in. Ensurue this is true
-    login_elem = browser.find_elements_by_xpath(
-        "//*[contains(text(), 'Log in')]")
-    # Login text is not found, user logged in
-    # If not, issue with cookie, create new cookie
-    if len(login_elem) == 0:
-        return True
-
-    # If not, issue with cookie, create new cookie
-    if cookie_loaded:
-        print("Issue with cookie for user " + username
-              + ". Creating new cookie...")
-
-    # Changes instagram language to english, to ensure no errors ensue from
-    # having the site on a different language
-    # Might cause problems if the OS language is english
+    # changes instagram website language to english to use english xpaths
     if switch_language:
         language_element_ENG = browser.find_element_by_xpath(
           "//select[@class='hztqj']/option[text()='English']")
         click_element(browser, language_element_ENG)
 
+    web_address_navigator(browser, ig_homepage)
+    reload_webpage(browser)
+
+
+    # cookie has been LOADED, so the user SHOULD be logged in
+    # check if the user IS logged in
+    login_state = check_authorization(browser,
+                                      username,
+                                      "activity counts",
+                                      logger,
+                                      False)
+    if login_state == True:
+        dismiss_notification_offer(browser, logger)
+        return True
+
+    # if user is still not logged in, then there is an issue with the cookie
+    # so go create a new cookie..
+    if cookie_loaded:
+        print("Issue with cookie for user {}. Creating "
+              "new cookie...".format(username))
+
     # Check if the first div is 'Create an Account' or 'Log In'
     login_elem = browser.find_element_by_xpath(
-        "//article/div/div/p/a[text()='Log in']")
+        "//article//a[text()='Log in']")
 
     if login_elem is not None:
         (ActionChains(browser)
@@ -236,7 +256,7 @@ def login_user(browser,
         update_activity()
 
     login_button = browser.find_element_by_xpath(
-        "//form/span/button[text()='Log in']")
+        "//button[text()='Log in']")
 
     (ActionChains(browser)
         .move_to_element(login_button)
@@ -247,22 +267,23 @@ def login_user(browser,
     update_activity()
 
     dismiss_get_app_offer(browser, logger)
+    dismiss_notification_offer(browser, logger)
 
     if bypass_suspicious_attempt is True:
-        bypass_suspicious_login(browser)
+        bypass_suspicious_login(browser, bypass_with_mobile)
 
-    sleep(5)
+    # wait until page fully load
+    explicit_wait(browser, "PFL", [], logger, 5)
 
     # Check if user is logged-in (If there's two 'nav' elements)
     nav = browser.find_elements_by_xpath('//nav')
     if len(nav) == 2:
         # create cookie for username
-        pickle.dump(browser.get_cookies(),
-                    open('{0}{1}_cookie.pkl'.format(logfolder,username), 'wb'))
+        pickle.dump(browser.get_cookies(), open(
+            '{0}{1}_cookie.pkl'.format(logfolder, username), 'wb'))
         return True
     else:
         return False
-
 
 
 def dismiss_get_app_offer(browser, logger):
@@ -271,11 +292,23 @@ def dismiss_get_app_offer(browser, logger):
     dismiss_elem = "//*[contains(text(), 'Not Now')]"
 
     # wait a bit and see if the 'Get App' offer rises up
-    offer_loaded = explicit_wait(browser, "VOEL", [offer_elem, "XPath"], logger, 5)
+    offer_loaded = explicit_wait(
+        browser, "VOEL", [offer_elem, "XPath"], logger, 5, False)
 
     if offer_loaded:
         dismiss_elem = browser.find_element_by_xpath(dismiss_elem)
         click_element(browser, dismiss_elem)
 
 
+def dismiss_notification_offer(browser, logger):
+    """ Dismiss 'Turn on Notifications' offer on session start """
+    offer_elem_loc = "//div/h2[text()='Turn on Notifications']"
+    dismiss_elem_loc = "//button[text()='Not Now']"
 
+    # wait a bit and see if the 'Turn on Notifications' offer rises up
+    offer_loaded = explicit_wait(
+        browser, "VOEL", [offer_elem_loc, "XPath"], logger, 4, False)
+
+    if offer_loaded:
+        dismiss_elem = browser.find_element_by_xpath(dismiss_elem_loc)
+        click_element(browser, dismiss_elem)

@@ -107,3 +107,9 @@ logs/
 # pytest
 .pytest_cache/
 tests/logs
+
+# Pipfile
+Pipfile
+
+# Instances
+z_*
